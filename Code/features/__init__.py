@@ -13,6 +13,7 @@ from .esm_features import ESMFeatureExtractor
 from .structure_features import StructureFeatureExtractor
 from .sequence_features import SequenceFeatureExtractor
 from .generate_structures import StructureGenerator
+from .esm3_features import ESM3FeatureExtractor
 
 __all__ = [
     "BlosumFeatureExtractor",
@@ -20,4 +21,5 @@ __all__ = [
     "StructureFeatureExtractor",
     "SequenceFeatureExtractor",
     "StructureGenerator"
+    "ESM3FeatureExtractor"
 ]

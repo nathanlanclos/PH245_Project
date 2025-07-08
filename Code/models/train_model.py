@@ -10,6 +10,7 @@ from sklearn.metrics import accuracy_score, classification_report, r2_score
 from sklearn.model_selection import KFold, StratifiedKFold
 from tqdm import tqdm
 from xgboost import XGBRegressor, XGBClassifier
+import matplotlib.pyplot as plt
 
 class SolubilityPredictor:
     def __init__(self, continuous_column='solubility', binary_column='binary_solubility', k_folds=5, seed = 42):
@@ -45,14 +46,9 @@ class SolubilityPredictor:
 
         elif input_data.endswith('.pkl'):
             df = pd.read_pickle(input_data)
-            #COMMENT OUT LATER
-            df = df.drop(["aac"], axis = 1)
-            df = df.drop(["blosum62_embedding", "flexibility"], axis = 1)
+            
         else:
             raise ValueError("Input must be a DataFrame, .csv, or .pkl file.")
-
-
-
         new_frames   = []          # store expanded list columns
         cols_to_drop = []          # original columns to remove
 
@@ -109,113 +105,167 @@ class SolubilityPredictor:
             ],
             remainder='passthrough'      # embeddings & any other cols stay untouched
         )
-        #self.scaler = StandardScaler()
+        self.scaler = StandardScaler()
 
-    def cross_validate_xgboost(self, model_type=XGBRegressor, best_params=None, n_optuna_trials=20, early_stopping=True):
-        if best_params is None:
-            best_params = self.optimize_hyperparameters(model_type, n_optuna_trials, early_stopping)
 
+
+    def cross_validate_xgboost(
+            self,
+            model_type=XGBRegressor,
+            best_params=None,
+            n_optuna_trials=20):
+        """
+        Train the final model with an internal validation split for early stopping.
+        The *test* set is kept blind.
+        """
+        # ----------------------- choose y & metric ------------------------- #
         if model_type is XGBRegressor:
-            y_train = self.y_train_cont
-            y_test = self.y_test_cont
+            y_train, y_test = self.y_train_cont, self.y_test_cont
             score_method = r2_score
         elif model_type is XGBClassifier:
-            y_train = self.y_train_bin
-            y_test = self.y_test_bin
+            y_train, y_test = self.y_train_bin, self.y_test_bin
             score_method = accuracy_score
-        else: 
-            print("Invalid Model type. Please choose XGBRegressor or XGBClassifier")
-            return
+        else:
+            raise ValueError("model_type must be XGBRegressor or XGBClassifier")
 
-        # Scale full training and test sets
+        # -------------------- get / search best params -------------------- #
+        if best_params is None and (model_type is XGBRegressor or model_type is XGBClassifier):
+            best_params = self.optimize_hyperparameters(
+                model_type=model_type,
+                n_trials=n_optuna_trials
+            )
+            print(f"Best parameters found: {best_params}")
+
+        # ------------------------------------------------------------------ #
         X_train_scaled = self.scaler.fit_transform(self.X_train)
-        X_test_scaled = self.scaler.transform(self.X_test)
-        xgb_model = model_type(**best_params, early_stopping_rounds = 15)
+        X_test_scaled  = self.scaler.transform(self.X_test)
+
+        # ---------------------- fit with early stop ----------------------- #
+        model = model_type(**best_params)
+        model.fit(X_train_scaled, y_train)
+
+        # -------------------------- evaluation ---------------------------- #
+        train_score = score_method(y_train, model.predict(X_train_scaled))
+        test_score  = score_method(y_test,  model.predict(X_test_scaled))
+        print(f"TRAIN {score_method.__name__}: {train_score:.4f}")
+        print(f"TEST  {score_method.__name__}: {test_score:.4f}")
+        #self.plot_predicted_vs_real(y_train, model.predict(X_train_scaled), train_score)
+        #self.plot_predicted_vs_real(y_test, model.predict(X_test_scaled), test_score)
+        return model
 
 
-        # Split off validation set for early stopping (only from training set)
-        if early_stopping:
-            X_train_core, X_val, y_train_core, y_val = train_test_split(
-                X_train_scaled, y_train, test_size=0.1, random_state=self.seed
-            )
-            xgb_model.fit(
-                X_train_core,
-                y_train_core,
-                eval_set=[(X_val, y_val)],
-                verbose=False
-            )
-        else:
-            xgb_model.fit(X_train_scaled, y_train)
-
-            
-
-        train_score = score_method(y_train, xgb_model.predict(X_train_scaled))
-        test_score = score_method(y_test, xgb_model.predict(X_test_scaled))
-
-        print(f"Final (TRAIN) Score for Model: {train_score:.4f}")
-        print(f"Final (TEST) Score for Model: {test_score:.4f}")
-        return xgb_model
-
-    
-    def optimize_hyperparameters(self, model_type = XGBRegressor, n_trials = 20, early_stopping = True):
-        results = []
+    # ----------------------------------------------------------------------
+    def optimize_hyperparameters(
+            self,
+            model_type=XGBRegressor,
+            n_trials=20):
+        """
+        Optuna study with per-fold early stopping.
+        """
+        # --------------- branch-specific settings ------------------------- #
         if model_type is XGBClassifier:
-            obj = "binary:logistic"
-            eval_met = "logloss"
-            score_method = accuracy_score
-            model_name = "XGBClassifier"
-            target = self.y_train_bin
-            cv = StratifiedKFold(n_splits=self.k_folds, shuffle=True, random_state=self.seed)
+            obj, eval_met = "binary:logistic", "error"
+            score_method  = accuracy_score
+            target        = self.y_train_bin
+            cv            = StratifiedKFold(n_splits=self.k_folds,
+                                            shuffle=True, random_state=self.seed)
         elif model_type is XGBRegressor:
-            obj = "reg:squarederror"
-            eval_met = "rmse"
-            score_method = r2_score
-            model_name = "XGBRegressor"
-            target = self.y_train_cont
-            cv = KFold(n_splits=self.k_folds, shuffle=True, random_state=self.seed)
+            obj, eval_met = "reg:squarederror", "r2"
+            score_method  = r2_score
+            target        = self.y_train_cont
+            cv            = KFold(n_splits=self.k_folds,
+                                shuffle=True, random_state=self.seed)
         else:
-            print("INVALID MODEL TYPE")
-            return
-        
+            raise ValueError("model_type must be XGBRegressor or XGBClassifier")
+
         def objective(trial):
             params = dict(
-                n_estimators     = (300 if early_stopping else trial.suggest_int('n_estimators', 50, 200)),
-                learning_rate    = trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
-                max_depth        = trial.suggest_int ('max_depth', 3, 8),
-                min_child_weight = trial.suggest_float('min_child_weight', 1.0, 10.0),
-                gamma            = trial.suggest_float('gamma', 0.0, 0.5),
-                subsample        = trial.suggest_float('subsample', 0.5, 1.0),
-                colsample_bytree = trial.suggest_float('colsample_bytree', 0.5, 1.0),
-                reg_alpha        = trial.suggest_float('reg_alpha', 0.0, 2.0),
-                reg_lambda       = trial.suggest_float('reg_lambda', 0.0, 2.0),
-                objective        = obj,
-                eval_metric      = eval_met,
-                random_state     = self.seed,
+                n_estimators=trial.suggest_int('n_estimators', 50, 300),
+                learning_rate=trial.suggest_float('learning_rate', 1e-2, 1e-1, log=True),
+                max_depth=trial.suggest_int('max_depth', 3, 8),
+                min_child_weight=trial.suggest_float('min_child_weight', 1.0, 10.0),
+                gamma=trial.suggest_float('gamma', 0.0, 0.5),
+                subsample=trial.suggest_float('subsample', 0.5, 1.0),
+                colsample_bytree=trial.suggest_float('colsample_bytree', 0.5, 1.0),
+                reg_alpha=trial.suggest_float('alpha', 0.0, 2.0),
+                reg_lambda=trial.suggest_float('lambda', 0.0, 2.0),
+                objective=obj,
+                random_state=self.seed,
             )
 
             fold_scores = []
-            for tr_idx, te_idx in cv.split(self.X_train, target if model_type is XGBClassifier else None):
-                scaler = ColumnTransformer(
-                    transformers=[
-                        ('num', StandardScaler(), self.scalar_features)   # ← only these get scaled
-                    ],
-                    remainder='passthrough'      # embeddings & any other cols stay untouched
-                )
-                X_tr = scaler.fit_transform(self.X_train.iloc[tr_idx])
-                X_te = scaler.transform    (self.X_train.iloc[te_idx])
+            for tr_idx, te_idx in cv.split(self.X_train,
+                                        target if model_type is XGBClassifier else None):
+                # split train fold into train/val for early stopping
+                X_tr_full = self.X_train.iloc[tr_idx]
+                y_tr_full = target[tr_idx]
+
+                X_te = self.X_train.iloc[te_idx]
+
+                X_tr = self.scaler.fit_transform(X_tr_full)
+                X_te  = self.scaler.transform(X_te)
 
                 model = model_type(**params)
-                model.fit(X_tr, target[tr_idx])
-                pred = model.predict(X_te)
-                fold_scores.append(score_method(target[te_idx], pred))
+                model.fit(X_tr, y_tr_full, verbose=False)
 
-            score = np.mean(fold_scores)
-            results.append({**params, 'Score': score})
-            return score
-        
+                preds = model.predict(X_te)
+                fold_scores.append(score_method(target[te_idx], preds))
+
+            return float(np.mean(fold_scores))
+
         study = optuna.create_study(direction="maximize")
         study.optimize(objective, n_trials=n_trials)
-        results_df = pd.DataFrame(results)
-        results_df.to_csv(f"Code\models\optuna_results_{model_name}.csv", index=False)
+
         best_params = study.best_params
         return best_params
+    
+    def plot_predicted_vs_real(self, y_true, y_pred, r2):
+        """
+        Plot predicted solubility values against real values for the test set, including line of best fit.
+        """
+        if y_true is None or y_pred is None:
+            raise ValueError("y_true and y_pred must be provided for plotting.")
+        plt.figure(figsize=(7,7))
+        plt.scatter(y_true, y_pred, alpha=0.6, edgecolor='k', label='Data')
+        # Ideal line
+        min_val = min(y_true.min(), y_pred.min())
+        max_val = max(y_true.max(), y_pred.max())
+        # Line of best fit
+        fit = np.polyfit(y_true, y_pred, 1)
+        fit_fn = np.poly1d(fit)
+        plt.plot([min_val, max_val], fit_fn([min_val, max_val]), 'b-', lw=2, label='Best Fit')
+        plt.xlabel('Real Solubility')
+        plt.ylabel('Predicted Solubility')
+        plt.title(f'Predicted vs Real Solubility (R² = {r2:.2f})')
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+    
+    def train_linear_regressor(self):
+        """
+        Train and evaluate a Linear Regression model for solubility regression.
+        """
+        X_train_scaled = self.scaler.fit_transform(self.X_train)
+        X_test_scaled = self.scaler.transform(self.X_test)
+        model = LinearRegression()
+        model.fit(X_train_scaled, self.y_train_cont)
+        train_score = r2_score(self.y_train_cont, model.predict(X_train_scaled))
+        test_score = r2_score(self.y_test_cont, model.predict(X_test_scaled))
+        print(f"LinearRegression TRAIN R2: {train_score:.4f}")
+        print(f"LinearRegression TEST  R2: {test_score:.4f}")
+        return model
+
+    def train_logistic_classifier(self):
+        """
+        Train and evaluate a Logistic Regression model for binary solubility classification.
+        """
+        X_train_scaled = self.scaler.fit_transform(self.X_train)
+        X_test_scaled = self.scaler.transform(self.X_test)
+        model = LogisticRegression(max_iter=1000, random_state=self.seed)
+        model.fit(X_train_scaled, self.y_train_bin)
+        train_score = accuracy_score(self.y_train_bin, model.predict(X_train_scaled))
+        test_score = accuracy_score(self.y_test_bin, model.predict(X_test_scaled))
+        print(f"LogisticRegression TRAIN Accuracy: {train_score:.4f}")
+        print(f"LogisticRegression TEST  Accuracy: {test_score:.4f}")
+        print("Classification report (test):\n", classification_report(self.y_test_bin, model.predict(X_test_scaled)))
+        return model

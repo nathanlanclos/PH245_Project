@@ -8,7 +8,7 @@ Created on Tue Jun 8 19:36:20 2025
 import pickle
 
 
-from features import ESMFeatureExtractor, BlosumFeatureExtractor, SequenceFeatureExtractor, StructureFeatureExtractor, StructureGenerator
+from features import ESMFeatureExtractor, BlosumFeatureExtractor, SequenceFeatureExtractor, StructureFeatureExtractor, StructureGenerator, ESM3FeatureExtractor
 from models import SolubilityPredictor
 if __name__ == "__main__":
     '''
@@ -29,20 +29,22 @@ if __name__ == "__main__":
     df = BlosumFeatureExtractor().generate_blosum_embeddings(df, output_path="dataset\processed\S.cerevisiae_test.csv")
     df = ESMFeatureExtractor().generate_ESM_embeddings(df, output_path="dataset\processed\S.cerevisiae_test.csv") 
     '''
-    predictor = SolubilityPredictor()
-    predictor.split_data('dataset/processed/eSol_train.csv', "dataset\processed\S.cerevisiae_test.csv")
+    predictor = SolubilityPredictor(k_folds=3)
+    predictor.split_data('dataset/processed/eSol_train3.csv', "dataset\processed\eSol_test3.csv")
     # Define the optimal parameters for the model
-    best_params = {'n_estimators': 300, 
-                   'learning_rate': 0.034644213887322986, 
-                   'max_depth': 6, 
-                   'min_child_weight': 9.71406913873956, 
-                   'gamma': 0.14595452117738994, 
-                   'subsample': 0.7745464078642961, 
-                   'colsample_bytree': 0.5504898392099907, 
-                   'reg_alpha': 1.5166161603842931, 
-                   'reg_lambda': 1.0900962363439852}
+    best_params = {'n_estimators': 200, 
+                'learning_rate': 0.034644213887322986, 
+                'max_depth': 6, 
+                'min_child_weight': 9.71406913873956, 
+                'gamma': 0.14595452117738994, 
+                'subsample': 0.7745464078642961, 
+                'colsample_bytree': 0.5504898392099907, 
+                'reg_alpha': 1.5166161603842931, 
+                'reg_lambda': 1.0900962363439852}
+    
+    xgb_reg = predictor.cross_validate_xgboost(n_optuna_trials=20)
 
-    xgb_reg = predictor.cross_validate_xgboost(best_params=best_params)
-
+    '''
     with open('Code/models/xgb_reg.pkl', 'wb') as f:
         pickle.dump(xgb_reg, f)
+    '''
